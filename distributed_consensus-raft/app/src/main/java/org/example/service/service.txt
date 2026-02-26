@@ -1,0 +1,138 @@
+@Service
+public class RaftSearchClient {
+    private String currentLeaderId = "node1"; // Start with a guess
+    private final Map<String, String> nodeAddresses = Map.of(
+        "node1", "localhost:50051",
+        "node2", "localhost:50052",
+        "node3", "localhost:50053"
+    );
+
+    public List<SearchResult> search(String query) {
+        try {
+            // 1. Try the known leader
+            return callSearchOnNode(currentLeaderId, query);
+        } catch (NotLeaderException e) {
+            // 2. The node told us who the REAL leader is!
+            this.currentLeaderId = e.getActualLeaderId();
+            return callSearchOnNode(currentLeaderId, query);
+        }
+    }
+
+    public void boost(String word) {
+        try {
+            callBoostOnNode(currentLeaderId, word);
+        } catch (NotLeaderException e) {
+            this.currentLeaderId = e.getActualLeaderId();
+            callBoostOnNode(currentLeaderId, word);
+        }
+    }
+}
+
+
+package jsl.group.weighted_tst;
+
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
+import jsl.group.raft.rpc.*;
+import org.springframework.stereotype.Service;
+import javax.annotation.PostConstruct;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Service
+public class SearchRaftClient {
+    private String currentLeaderId = "node1"; // Default guess
+    private final Map<String, String> nodeAddresses = Map.of(
+        "node1", "localhost:50051",
+        "node2", "localhost:50052",
+        "node3", "localhost:50053"
+    );
+
+    private final Map<String, RaftServiceGrpc.RaftServiceBlockingStub> stubs = new ConcurrentHashMap<>();
+
+    @PostConstruct
+    public void init() {
+        for (var entry : nodeAddresses.entrySet()) {
+            ManagedChannel channel = ManagedChannelBuilder.forAddress(
+                    entry.getValue().split(":")[0],
+                    Integer.parseInt(entry.getValue().split(":")[1]))
+                .usePlaintext().build();
+            stubs.put(entry.getKey(), RaftServiceGrpc.newBlockingStub(channel));
+        }
+    }
+
+    public List<SearchResult> search(String query, int limit) {
+        return executeWithRetry(() -> {
+            SearchRequest request = SearchRequest.newBuilder()
+                    .setQuery(query)
+                    .setLimit(limit)
+                    .build();
+
+            SearchResponse response = stubs.get(currentLeaderId).handleSearch(request);
+
+            if (!response.getSuccess() && response.getLeaderId() != null) {
+                updateLeader(response.getLeaderId());
+                throw new NotLeaderException(response.getLeaderId());
+            }
+
+            return response.getResultsList().stream()
+                    .map(r -> new SearchResult(r.getWord(), r.getUrl()))
+                    .toList();
+        });
+    }
+
+    public void boost(String word) {
+        executeWithRetry(() -> {
+            BoostRequest request = BoostRequest.newBuilder().setWord(word).build();
+            BoostResponse response = stubs.get(currentLeaderId).handleBoost(request);
+
+            if (!response.getSuccess()) {
+                updateLeader(response.getLeaderId());
+                throw new NotLeaderException(response.getLeaderId());
+            }
+            return null;
+        });
+    }
+
+    private void updateLeader(String newLeaderId) {
+        if (newLeaderId != null && !newLeaderId.isEmpty()) {
+            this.currentLeaderId = newLeaderId;
+        } else {
+            // If no leader is known (election in progress), cycle to next node
+            List<String> keys = new ArrayList<>(nodeAddresses.keySet());
+            this.currentLeaderId = keys.get((keys.indexOf(currentLeaderId) + 1) % keys.size());
+        }
+    }
+
+    // Helper to handle the retry logic
+    private <T> T executeWithRetry(SupplierWithException<T> action) {
+        int retries = 3;
+        while (retries-- > 0) {
+            try {
+                return action.get();
+            } catch (NotLeaderException e) {
+                // Leader updated in catch, loop will retry with new leader
+            } catch (Exception e) {
+                updateLeader(""); // Try a different node on network error
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+            }
+        }
+        throw new RuntimeException("Raft cluster unavailable");
+    }
+
+    private interface SupplierWithException<T> { T get() throws Exception; }
+    private static class NotLeaderException extends Exception {
+        public NotLeaderException(String id) { super(id); }
+    }
+}
+
+@RestController
+public class SearchController {
+    @Autowired private SearchRaftClient raftClient;
+
+    @GetMapping("/api/suggest")
+    public List<SearchResult> suggest(@RequestParam String q) {
+        return raftClient.search(q, 5);
+    }
+}
+

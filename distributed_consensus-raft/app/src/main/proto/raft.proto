@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+option java_package = "org.example.raft.rpc";
+option java_multiple_files = true;
+
+service RaftService {
+  // Leader uses this for heartbeats and log replication
+  rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse);
+
+  // Candidate uses this to win elections
+  rpc RequestVote (RequestVoteRequest) returns (RequestVoteResponse);
+
+  rpc HandleBoost (BoostRequest) returns (BoostResponse);
+  rpc HandleSearch (SearchRequest) returns (SearchResponse);
+  rpc InstallSnapshot (InstallSnapshotRequest) returns (InstallSnapshotResponse);
+  rpc HandleInsert (InsertRequest) returns (InsertResponse);
+}
+
+message LogEntry {
+  int64 term = 1;
+  string command = 2; // e.g., "BOOST:apple" or "INSERT:banana:100"
+}
+
+message AppendEntriesRequest {
+  int64 term = 1;            // Leader's current term
+  string leaderId = 2;       // To redirect clients
+  int64 prevLogIndex = 3;    // Index of log entry immediately preceding new ones
+  int64 prevLogTerm = 4;     // Term of prevLogIndex entry
+  repeated LogEntry entries = 5; // Log entries to store (empty for heartbeats)
+  int64 leaderCommit = 6;    // Leader's commitIndex
+}
+
+message AppendEntriesResponse {
+  int64 term = 1;            // For leader to update itself
+  bool success = 2;          // True if follower contained matching entry
+}
+
+message RequestVoteRequest {
+  int64 term = 1;            // Candidate's term
+  string candidateId = 2;    // Candidate requesting vote
+  int64 lastLogIndex = 3;    // Index of candidate's last log entry
+  int64 lastLogTerm = 4;     // Term of candidate's last log entry
+}
+
+message RequestVoteResponse {
+  int64 term = 1;            // For candidate to update itself
+  bool voteGranted = 2;      // True means candidate received vote
+}
+
+// Request from Spring Boot to boost a word's popularity
+message BoostRequest {
+  string word = 1;
+}
+
+message BoostResponse {
+  bool success = 1;
+  string leaderId = 2; // If success is false, this tells the client who to talk to
+}
+
+// Request for autocomplete results
+message SearchRequest {
+  string query = 1;
+  int32 limit = 2;
+}
+
+message SearchResponse {
+  repeated SearchResultItem results = 1;
+  bool success = 2;
+  string leaderId = 3;
+}
+
+message SearchResultItem {
+  string word = 1;
+  string url = 2;
+}
+
+message InstallSnapshotRequest {
+  int64 term = 1;                 // Leader's term
+  string leaderId = 2;            // So follower can redirect clients
+  int64 lastIncludedIndex = 3;    // Snapshot replaces all entries up to this index
+  int64 lastIncludedTerm = 4;     // Term of lastIncludedIndex
+  bytes data = 5;                 // Raw TST snapshot data (chunk)
+  // Optional: int64 offset = 6;  // For multi-part chunking
+  // Optional: bool done = 7;     // True if this is the last chunk
+}
+
+message InstallSnapshotResponse {
+  int64 term = 1;                 // CurrentTerm, for leader to update itself
+}
+
+message InsertRequest {
+  string word = 1;
+  int32 weight = 2;
+  string url = 3;
+}
+
+message InsertResponse {
+  bool success = 1;
+  string leaderId = 2;
+}
+

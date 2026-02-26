@@ -28,3 +28,9 @@ A distributed, high-concurrency search navigation engine built from the ground u
 *   **Distributed**: Raft Protocol, gRPC, Protocol Buffers
 *   **Build/Test**: Gradle 9.3.1, JMH (Microbenchmarking), JOL (Memory Profiling)
 *   **Concurrency**: `ReentrantReadWriteLock`, `AtomicLong`, `ScheduledExecutorService`
+
+#### Useful Commands
+```bash
+./gradlew launchCluster
+./gradlew runTestClient
+```
